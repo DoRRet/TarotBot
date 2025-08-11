@@ -1,0 +1,12 @@
+environment: python
+toolchain:
+  name: pip
+  version: 3.12
+
+build:
+  requirementsPath: requirements.txt
+
+run:
+  command: python3 -m bot.main 
+  containerPort: 8000
+  persistenceMount: /data 

@@ -869,8 +869,8 @@ class ReadingHandler(BaseHandler):
         query = update.callback_query
         await query.answer()
         user_id = query.from_user.id
-
-        # Проверка доступа — есть ли подписка или попытки
+    
+        # Проверка доступа
         if not await BaseHandler.check_access(user_id):
             await context.bot.send_message(
                 chat_id=user_id,
@@ -882,24 +882,34 @@ class ReadingHandler(BaseHandler):
                 ])
             )
             return ConversationHandler.END
-
-        # Списываем попытку (даже если есть подписка, чтобы не было ухода в минус)
+    
+        # Списываем попытку
         await update_attempts(user_id, -1)
-
-        reading = await TarotInterpreter.generate_interpretation("Что меня ждет сегодня?", "", [])
+    
+        # Берем одну случайную карту
+        card = random.choice(TAROT_DECK)
+        
+        # Генерируем интерпретацию для одной карты
+        reading = await TarotInterpreter.generate_interpretation(
+            "Что меня ждет сегодня?", 
+            "", 
+            [card]
+        )
+        
         await context.bot.send_message(
             chat_id=user_id,
-            text=f"✨ Ваш дневной расклад:\n\n{reading}"
+            text=f"✨ Ваш дневной расклад:\n\nКарта дня: *{card}*\n\n{reading}",
+            parse_mode="Markdown"
         )
         return ConversationHandler.END
-
+    
     @staticmethod
     async def weekly_reading(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         user_id = query.from_user.id
-
-        # Проверка доступа — есть ли подписка или попытки
+    
+        # Проверка доступа
         if not await BaseHandler.check_access(user_id):
             await context.bot.send_message(
                 chat_id=user_id,
@@ -911,14 +921,24 @@ class ReadingHandler(BaseHandler):
                 ])
             )
             return ConversationHandler.END
-
-        # Списываем попытку (даже если есть подписка, чтобы не было ухода в минус)
+    
+        # Списываем попытку
         await update_attempts(user_id, -1)
-
-        reading = await TarotInterpreter.generate_interpretation("Что меня ждет на этой неделе?", "", [])
+    
+        # Берем одну случайную карту
+        card = random.choice(TAROT_DECK)
+        
+        # Генерируем интерпретацию для одной карты
+        reading = await TarotInterpreter.generate_interpretation(
+            "Что меня ждет на этой неделе?", 
+            "", 
+            [card]
+        )
+        
         await context.bot.send_message(
             chat_id=user_id,
-            text=f"✨ Ваш недельный расклад:\n\n{reading}"
+            text=f"✨ Ваш недельный расклад:\n\nКарта недели: *{card}*\n\n{reading}",
+            parse_mode="Markdown"
         )
         return ConversationHandler.END
 

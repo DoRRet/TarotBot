@@ -1,3 +1,5 @@
+import sys
+sys.path.append('/root/TarotBot')
 import asyncio
 import logging
 import warnings
@@ -10,6 +12,7 @@ from config import Config
 from bot.handlers import *
 from database import init_db
 import signal
+
 
 # Игнорировать предупреждения
 warnings.filterwarnings("ignore", category=PTBUserWarning)
