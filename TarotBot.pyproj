@@ -43,6 +43,7 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include=".env" />
+    <Content Include=".gitignore" />
     <Content Include="data\card_meanings.json" />
     <Content Include="README.md" />
     <Content Include="requirements.txt" />
