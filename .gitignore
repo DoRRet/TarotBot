@@ -1,0 +1,9 @@
+# Виртуальные окружения
+venv/
+venv2/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+
+.vs/

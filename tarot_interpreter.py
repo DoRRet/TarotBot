@@ -1,72 +1,100 @@
-import requests
+import aiohttp
 import uuid
+import logging
+import ssl
 import json
+from pathlib import Path
+from config import Config
+from typing import Optional, Dict, Any
 
-# Данные для авторизации
-AUTHORIZATION_KEY = "ZWEwMmMyZDctMThiNC00MWFlLTkxY2YtZmQ4M2EzMjdlZjY1OjIxMDgxYzA0LTM0MWItNDcwZC1iOGRmLTE2ZGE4Zjk1MzkwMw=="
-SCOPE = "GIGACHAT_API_PERS"
 
-def get_access_token():
-    """
-    Получает токен доступа для GigaChat API с использованием собственного сертификата.
-    """
-    url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+logger = logging.getLogger(__name__)
+
+class TarotInterpreter:
+    _card_meanings: Dict[str, Any] = {}
     
-    # Генерация уникального идентификатора для запроса
-    rq_uid = str(uuid.uuid4())
-
-    # Параметры запроса
-    payload = 'scope=' + SCOPE  # ело запроса как строка
-
-    # Заголовки запроса
-    headers = {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Accept': 'application/json',
-        'RqUID': rq_uid,  
-        'Authorization': f'Basic {AUTHORIZATION_KEY}'  
-    }
-
-    # Путь к сертификату для проверки SSL
-    verify_path = r'C:\Users\DICK\Desktop\TarotBot\russian_trusted_root_ca.cer'
-
-    try:
-        # Отправка POST запроса для получения токена
-        response = requests.post(url, headers=headers, data=payload, verify=verify_path)
-
-        # Печатаем статус код и текст ответа для отладки
-        print(f"Response Status Code: {response.status_code}")
-        print(f"Response Text: {response.text}")
-
-        # Проверка на успешный ответ
-        response.raise_for_status()
-
-        # Извлекаем токен из ответа
-        response_json = response.json()
-        return response_json.get("access_token")
-    
-    except requests.exceptions.SSLError as e:
-        print("Ошибка SSL-сертификата. Проверьте соединение или сертификат.")
-        return None
-    except requests.exceptions.RequestException as e:
-        print(f"Ошибка при получении токена: {e}")
-        return None
+    @classmethod
+    async def load_meanings(cls):
+        """Загрузка значений карт"""
+        try:
+            # Пробуем несколько возможных путей
+            paths_to_try = [
+                Config.MEANINGS_PATH,
+                Path("data/card_meanings.json"),
+                Path("../data/card_meanings.json")
+            ]
+            
+            for path in paths_to_try:
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        cls._card_meanings = json.load(f)
+                    logger.info(f"Card meanings loaded from {path}")
+                    return
+                except FileNotFoundError:
+                    continue
+            
+            raise FileNotFoundError("Could not find card meanings file")
+            
+        except Exception as e:
+            logger.error(f"Error loading card meanings: {e}")
+            cls._card_meanings = {} 
 
 
+    @staticmethod
+    async def get_access_token() -> Optional[str]:
+        """Получение токена доступа для GigaChat API"""
+        url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+        
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json',
+            'RqUID': str(uuid.uuid4()),
+            'Authorization': f'Basic {Config.GIGACHAT_AUTH_KEY}'
+        }
+        
+        data = {
+            'scope': Config.GIGACHAT_SCOPE
+        }
+        
+        try:
+            ssl_context = ssl.create_default_context(cafile=str(Config.SSL_CERT_PATH))
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    headers=headers,
+                    data=data,
+                    ssl=ssl_context,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status != 200:
+                        logger.error(f"GigaChat auth failed: {response.status}")
+                        return None
+                    
+                    json_response = await response.json()
+                    return json_response.get("access_token")
+        except Exception as e:
+            logger.error(f"GigaChat auth error: {str(e)}")
+            return None
 
-def generate_tarot_interpretation(question, situation, selected_cards):
-    """
-    Генерирует интерпретацию расклада на основе вопроса, предыстории и выбранных карт, используя GigaChat API.
-    """
-    # Получаем актуальный токен доступа
-    token = get_access_token()
+    @staticmethod
+    async def generate_interpretation(question: str, situation: str, cards: list) -> str:
+        """Генерация интерпретации расклада"""
+        token = await TarotInterpreter.get_access_token()
+        if not token:
+            return "Не удалось получить токен для доступа к GigaChat."
 
-    if not token:
-        return "Не удалось получить токен для доступа к GigaChat."
-    
-    prompt = f"""Вы являетесь опытным тарологом (Таро Уэйта). Вопрошающий задал следующий вопрос: "{question}". 
-    Предыстория ситуации: "{situation}". 
-    Вопрощающий вытянул следующие карты: {", ".join(selected_cards)}.  
-    Отправь краткий ответ именно с таким оформлением как в примере, но текст измени под карты и ситуацию вопрошающего("{question}", "{situation}", {", ".join(selected_cards)}). Пример:
+        url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Authorization': f'Bearer {token}'
+        }
+
+        prompt = f"""Вы являетесь опытным тарологом (Таро Уэйта). Вопрошающий задал следующий вопрос: "{question}". 
+Предыстория ситуации: "{situation}". 
+Вопрощающий вытянул следующие карты: {", ".join(cards)}.  
+Отправь краткий ответ именно с таким оформлением как в примере ниже, но текст измени под карты и ситуацию вопрошающего("{question}", "{situation}", {", ".join(cards)}). Пример:
 
 1. ✨Жрица✨:
 ⭐️ Символизирует интуицию, внутренний мир и эмоции.
@@ -86,33 +114,69 @@ def generate_tarot_interpretation(question, situation, selected_cards):
 
 ⭐️Не спешите с выводами⭐️, так как чувства могут быть скрытыми, и важно дать Данилу время и пространство для осознания своих эмоций, а также развивайте свою интуицию, чтобы понять, что он чувствует, и не бойтесь задавать ему вопросы напрямую."""
 
-    url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-    
-    headers = {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'Authorization': f'Bearer {token}'
-    }
-    
-    payload = {
-        "model": "GigaChat",
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "stream": False,
-        "repetition_penalty": 1
-    }
+        payload = {
+            "model": "GigaChat",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.7,
+            "max_tokens": 1024
+        }
 
-    try:
-        response = requests.post(url, headers=headers, json=payload, verify='russian_trusted_root_ca.cer')
+        try:
+            ssl_context = ssl.create_default_context(cafile=str(Config.SSL_CERT_PATH))
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url, 
+                    headers=headers, 
+                    json=payload, 
+                    ssl=ssl_context,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return data.get('choices', [{}])[0].get('message', {}).get('content', '')
+                    logger.error(f"GigaChat API error: {await response.text()}")
+                    return "Ошибка при генерации интерпретации"
+        except asyncio.TimeoutError:
+            logger.error("Timeout generating interpretation")
+            return "Время генерации истекло, попробуйте позже"
+        except Exception as e:
+            logger.error(f"Request error: {str(e)}")
+            return "Ошибка подключения к серверу"
+
+    @classmethod
+    async def get_card_meaning(cls, card_name: str, is_reversed: bool = False) -> str:
+        """Получение значения карты с учетом положения"""
+        if not cls._card_meanings:
+            await cls.load_meanings()
         
-        if response.status_code == 200:
-            data = response.json()
-            interpretation = data.get('choices', [{}])[0].get('message', {}).get('content', '').strip()
-            return interpretation
-        else:
-            print(f"Ошибка при запросе к GigaChat: {response.text}")
-            return "Произошла ошибка при генерации интерпретации. Попробуйте снова."
-    except requests.exceptions.RequestException as e:
-        print(f"Ошибка запроса: {e}")
-        return "Произошла ошибка при подключении к серверу."
+        card_data = cls._card_meanings.get(card_name)
+        if not card_data:
+            return f"🔮 Карта '{card_name}' не найдена в базе данных."
+        
+        category = card_data.get("category", "Неизвестная категория")
+        meaning = card_data.get("meaning", "Нет данных")
+        upright = card_data.get("upright", "Нет данных")
+        reversed_text = card_data.get("reversed", "Нет данных")
+        
+        return (
+            f"📖 *{card_name}* ({category}) {'(Перевернутая)' if is_reversed else ''}\n\n"
+            f"🔮 *Основное значение:*\n{meaning}\n\n"
+            f"⭐ *Прямое положение:*\n{upright}\n\n"
+            f"🌀 *Перевернутое положение:*\n{reversed_text}"
+        )
+    
+    @classmethod
+    async def search_cards(cls, query: str) -> list:
+        """Поиск карт по названию"""
+        if not cls._card_meanings:
+            await cls.load_meanings()
+        
+        results = []
+        query_lower = query.lower()
+        
+        for card_name, card_data in cls._card_meanings.items():
+            if query_lower in card_name.lower():
+                results.append((card_name, card_data.get("category", "Неизвестно")))
+        
+        return results

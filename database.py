@@ -1,125 +1,180 @@
-import sqlite3
+import aiosqlite
+from pathlib import Path
+from config import Config
+import logging
+from typing import Optional
 
-def create_db():
-    conn = sqlite3.connect('tarotbot.db')  
-    cursor = conn.cursor()
+logger = logging.getLogger(__name__)
 
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        telegram_id INTEGER UNIQUE NOT NULL,
-        username TEXT,
-        free_attempts INTEGER DEFAULT 5,
-        subscription_status TEXT DEFAULT 'free'
-    )
-    ''')
-
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS subscriptions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        subscription_type TEXT,
-        start_date TEXT,
-        end_date TEXT,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )
-    ''')
-
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS tarot_readings (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        reading_date TEXT,
-        spread TEXT,
-        interpretation TEXT,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )
-    ''')
-
-    conn.commit()
-    conn.close()
+async def init_db():
+    """Инициализация базы данных"""
+    Path(Config.DB_PATH.parent).mkdir(exist_ok=True)
     
-create_db()
+    async with aiosqlite.connect(Config.DB_PATH) as conn:
+        await conn.executescript('''
+        CREATE TABLE IF NOT EXISTS users (
+            telegram_id INTEGER PRIMARY KEY NOT NULL,
+            username TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            start_date TIMESTAMP NOT NULL,
+            end_date TIMESTAMP NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(telegram_id)
+        );
+        
+        CREATE TABLE IF NOT EXISTS attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            remaining INTEGER NOT NULL DEFAULT 0,
+            last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(telegram_id)
+        );
+        
+        CREATE TABLE IF NOT EXISTS readings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            question TEXT,
+            situation TEXT,
+            cards TEXT NOT NULL,
+            interpretation TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(telegram_id)
+        );
+        ''')
+        await conn.commit()
 
-def add_user(telegram_id, username):
-    conn = sqlite3.connect('tarotbot.db')
-    cursor = conn.cursor()
+async def execute_query(query: str, params: tuple = (), fetch_one: bool = False):
+    """Универсальная функция для выполнения запросов"""
+    try:
+        async with aiosqlite.connect(Config.DB_PATH) as conn:
+            cursor = await conn.execute(query, params)
+            await conn.commit()
+            return await cursor.fetchone() if fetch_one else await cursor.fetchall()
+    except Exception as e:
+        logger.error(f"Database error: {e}")
+        raise
 
-    cursor.execute('''
-    INSERT OR IGNORE INTO users (telegram_id, username)
-    VALUES (?, ?)
-    ''', (telegram_id, username))
-
-    conn.commit()
-    conn.close()
-
-def get_user(telegram_id):
-    conn = sqlite3.connect('tarotbot.db')
-    cursor = conn.cursor()
-
-    cursor.execute('''
-    SELECT * FROM users WHERE telegram_id = ?
-    ''', (telegram_id,))
-    user = cursor.fetchone()
-
-    conn.close()
-    return user
-
-def update_free_attempts(telegram_id, new_attempts=None):
-    
-    conn = sqlite3.connect('tarotbot.db')
-    cursor = conn.cursor()
-
-    if new_attempts is None:
-        # ��������� ������� �� 1
-        cursor.execute('''
-        UPDATE users SET free_attempts = free_attempts - 1 WHERE telegram_id = ?
-        ''', (telegram_id,))
+async def add_user(telegram_id: int, username: str = None, referrer_id: Optional[int] = None, context=None):
+    user = await get_user(telegram_id)
+    if not user:
+        # Первый вход — добавляем
+        await execute_query(
+            "INSERT INTO users (telegram_id, username, referrer_id) VALUES (?, ?, ?)",
+            (telegram_id, username, referrer_id)
+        )
+        # Новый пользователь по умолчанию получает 5 попыток
+        await execute_query(
+            "INSERT OR IGNORE INTO attempts (user_id, remaining) VALUES (?, ?)",
+            (telegram_id, 5)
+        )
+        # Если есть реферал и не сам себе, начисляем по 1 бонусу обоим
+        if referrer_id and referrer_id != telegram_id:
+            await update_attempts(referrer_id, 1)
+            await update_attempts(telegram_id, 1)  # <-- Новый пользователь получает +1
+            # Сообщаем пригласителю
+            if context:
+                try:
+                    await context.bot.send_message(
+                        chat_id=referrer_id,
+                        text=f"🎉 По вашей ссылке зарегистрировался @{username or telegram_id}! Вам начислена 1 попытка."
+                    )
+                except Exception:
+                    pass
+            # Сообщаем новому пользователю
+            if context:
+                try:
+                    await context.bot.send_message(
+                        chat_id=telegram_id,
+                        text=f"🎁 Добро пожаловать! Вы зарегистрировались по реферальной ссылке и получили дополнительную попытку."
+                    )
+                except Exception:
+                    pass
     else:
-        # ������������� ���������� ���������� �������
-        cursor.execute('''
-        UPDATE users SET free_attempts = ? WHERE telegram_id = ?
-        ''', (new_attempts, telegram_id))
+        await execute_query(
+            "UPDATE users SET username = ? WHERE telegram_id = ?",
+            (username, telegram_id)
+        )
 
-    conn.commit()
-    conn.close()
 
-def save_tarot_reading(user_id, spread, interpretation):
-    conn = sqlite3.connect('tarotbot.db')
-    cursor = conn.cursor()
+async def get_user(telegram_id: int):
+    """Получение информации о пользователе"""
+    return await execute_query(
+        "SELECT * FROM users WHERE telegram_id = ?", 
+        (telegram_id,), 
+        fetch_one=True
+    )
 
-    cursor.execute('''
-    INSERT INTO tarot_readings (user_id, reading_date, spread, interpretation)
-    VALUES (?, DATETIME('now'), ?, ?)
-    ''', (user_id, spread, interpretation))
+async def get_attempts(telegram_id: int):
+    """Получение попыток с обработкой ошибок"""
+    try:
+        async with aiosqlite.connect(Config.DB_PATH) as conn:
+            cursor = await conn.execute(
+                "SELECT remaining FROM attempts WHERE user_id = ?",
+                (telegram_id,)
+            )
+            result = await cursor.fetchone()
+            return result[0] if result else 0
+    except Exception as e:
+        logger.error(f"Error getting attempts for {telegram_id}: {e}")
+        return None
 
-    conn.commit()
-    conn.close()
+async def get_active_subscription(telegram_id: int):
+    """Получение подписки с обработкой ошибок"""
+    try:
+        async with aiosqlite.connect(Config.DB_PATH) as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM subscriptions WHERE user_id = ? AND end_date > datetime('now')",
+                (telegram_id,)
+            )
+            return await cursor.fetchone()
+    except Exception as e:
+        logger.error(f"Error getting subscription for {telegram_id}: {e}")
+        return None
 
-def activate_subscription(telegram_id, subscription_type, start_date, end_date):
-    conn = sqlite3.connect('tarotbot.db')
-    cursor = conn.cursor()
+async def update_attempts(telegram_id: int, change: int):
+    """Обновление количества попыток с защитой от отрицательных значений при подписке"""
+    async with aiosqlite.connect(Config.DB_PATH) as conn:
+        # Проверяем есть ли активная подписка
+        has_sub = await conn.execute(
+            "SELECT 1 FROM subscriptions WHERE user_id = ? AND end_date > datetime('now')",
+            (telegram_id,)
+        )
+        has_sub = await has_sub.fetchone()
 
-    cursor.execute('''
-    INSERT INTO subscriptions (user_id, subscription_type, start_date, end_date)
-    VALUES ((SELECT id FROM users WHERE telegram_id = ?), ?, ?, ?)
-    ''', (telegram_id, subscription_type, start_date, end_date))
+        if has_sub and change < 0:
+            # Если есть подписка, не даем уйти в минус
+            await conn.execute(
+                "UPDATE attempts SET remaining = MAX(remaining + ?, 0) WHERE user_id = ?",
+                (change, telegram_id)
+            )
+        else:
+            # Иначе обычное обновление
+            await conn.execute(
+                "UPDATE attempts SET remaining = remaining + ? WHERE user_id = ?",
+                (change, telegram_id)
+            )
+        await conn.commit()
 
-    cursor.execute('''
-    UPDATE users SET subscription_status = ? WHERE telegram_id = ?
-    ''', (subscription_type, telegram_id))
 
-    conn.commit()
-    conn.close()
+async def add_subscription(telegram_id: int, sub_type: str, duration_days: int):
+    """Добавление подписки"""
+    from datetime import datetime, timedelta
+    start = datetime.now()
+    end = start + timedelta(days=duration_days)
+    
+    await execute_query(
+        "INSERT INTO subscriptions (user_id, type, start_date, end_date) VALUES (?, ?, ?, ?)",
+        (telegram_id, sub_type, start.isoformat(), end.isoformat())
+    )
 
-def get_subscription_status(telegram_id):
-    conn = sqlite3.connect('tarotbot.db')
-    cursor = conn.cursor()
-
-    cursor.execute('''
-    SELECT subscription_status FROM users WHERE telegram_id = ?
-    ''', (telegram_id,))
-    status = cursor.fetchone()
-
-    conn.close()
-    return status[0] if status else None
+async def save_reading(telegram_id: int, question: str, situation: str, cards: list, interpretation: str):
+    """Сохранение расклада"""
+    await execute_query(
+        "INSERT INTO readings (user_id, question, situation, cards, interpretation) VALUES (?, ?, ?, ?, ?)",
+        (telegram_id, question, situation, ",".join(cards), interpretation)
+    )

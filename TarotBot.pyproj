@@ -4,7 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>e8be3328-5aba-4f65-b8ca-5b41094a56c5</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>TarotBot.py</StartupFile>
+    <StartupFile>bot\main.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -22,11 +22,13 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="bot\handlers.py" />
+    <Compile Include="bot\__init__.py" />
+    <Compile Include="config.py" />
     <Compile Include="database.py" />
-    <Compile Include="memes.py" />
-    <Compile Include="subscription.py" />
-    <Compile Include="TarotBot.py" />
+    <Compile Include="bot\main.py" />
     <Compile Include="tarot_interpreter.py" />
+    <Compile Include="__init__.py" />
   </ItemGroup>
   <ItemGroup>
     <Interpreter Include="venv\">
@@ -41,11 +43,15 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include=".env" />
-    <Content Include="images\welcome.jpg" />
+    <Content Include="data\card_meanings.json" />
     <Content Include="README.md" />
+    <Content Include="requirements.txt" />
   </ItemGroup>
   <ItemGroup>
-    <Folder Include="images\" />
+    <Folder Include="bot\" />
+    <Folder Include="database\" />
+    <Folder Include="certs\" />
+    <Folder Include="data\" />
   </ItemGroup>
   <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
