@@ -37,70 +37,48 @@ async def post_init(application: Application) -> None:
 
 def setup_handlers(app: Application) -> None:
     """Настройка всех обработчиков"""
-    # Обработчики команд
+
+    # Команды
     app.add_handler(CommandHandler("start", StartHandler.start))
-    app.add_handler(CommandHandler("help", StartHandler.help))
-    app.add_handler(CommandHandler("admin", AdminHandler.admin_menu))
+    # ❌ Был дубль двух разных /help
+    # app.add_handler(CommandHandler("help", StartHandler.help))
+    # app.add_handler(CommandHandler("help", HelpHandler.show_help))
+    # ✅ Оставляем один, который точно показывает помощь
     app.add_handler(CommandHandler("help", HelpHandler.show_help))
-    app.add_handler(CallbackQueryHandler(
-    AdminHandler.admin_analytics,
-    pattern="^admin_analytics$"
-))
-    app.add_handler(CallbackQueryHandler(
-    ReadingHandler.daily_reading,
-    pattern="^daily_reading$"
-))
-    app.add_handler(CallbackQueryHandler(
-    ReadingHandler.weekly_reading,
-    pattern="^weekly_reading$"
-))
-    app.add_handler(CallbackQueryHandler(
-    ReferralHandler.invite,
-    pattern="^referral$"
-))
+    app.add_handler(CommandHandler("admin", AdminHandler.admin_menu))
 
+    # Кнопки админа
+    app.add_handler(CallbackQueryHandler(AdminHandler.admin_analytics, pattern="^admin_analytics$"))
+    app.add_handler(CallbackQueryHandler(ReadingHandler.daily_reading, pattern="^daily_reading$"))
+    app.add_handler(CallbackQueryHandler(ReadingHandler.weekly_reading, pattern="^weekly_reading$"))
+    app.add_handler(CallbackQueryHandler(ReferralHandler.invite, pattern="^referral$"))
 
-    # Обработчик кнопки помощи
-    app.add_handler(CallbackQueryHandler(
-        HelpHandler.show_help,
-        pattern="^help$"
-    ))
+    # Кнопка помощи
+    app.add_handler(CallbackQueryHandler(HelpHandler.show_help, pattern="^help$"))
 
-    # ConversationHandler для консультаций
+    # --- Консультации ---
     consultation_conv = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(
-                ConsultationHandler.start_consultation,
-                pattern="^consultation$"
-            ),
-            CallbackQueryHandler(
-                ConsultationHandler.confirm_consultation,
-                pattern="^confirm_consultation$"
-            )
+            CallbackQueryHandler(ConsultationHandler.start_consultation, pattern="^consultation$"),
+            CallbackQueryHandler(ConsultationHandler.confirm_consultation, pattern="^confirm_consultation$")
         ],
         states={
             "GET_CONSULTATION_DETAILS": [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    ConsultationHandler.get_consultation_details
-                )
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ConsultationHandler.get_consultation_details)
             ]
         },
         fallbacks=[
             CommandHandler("cancel", ConsultationHandler.cancel_consultation),
-            CallbackQueryHandler(
-                StartHandler.start,
-                pattern="^start_over$"
-            )
+            CallbackQueryHandler(StartHandler.start, pattern="^start_over$")
         ]
     )
     app.add_handler(consultation_conv)
 
-    # ConversationHandler для админ-панели
+    # --- Админ-панель ---
     admin_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(AdminHandler.admin_users_menu, pattern="^admin_users$"),
-            CallbackQueryHandler(AdminHandler.admin_request_user_id, pattern="^admin_(add_attempts|remove_attempts|add_sub)$")
+            CallbackQueryHandler(AdminHandler.admin_request_user_id, pattern="^admin_(add_attempts|remove_attempts|add_sub|cancel_sub)$")
         ],
         states={
             "ADMIN_GET_USER_ID": [MessageHandler(filters.TEXT & ~filters.COMMAND, AdminHandler.admin_get_user_id)],
@@ -109,42 +87,69 @@ def setup_handlers(app: Application) -> None:
         },
         fallbacks=[
             CallbackQueryHandler(AdminHandler.admin_users_menu, pattern="^admin_back$"),
-            CallbackQueryHandler(AdminHandler.admin_users_menu, pattern="^admin_users$")
+            CallbackQueryHandler(AdminHandler.admin_users_menu, pattern="^admin_users$"),
+            CommandHandler("admin", AdminHandler.admin_menu_exit),
+            CommandHandler("start", AdminHandler.admin_menu_exit),
+            CommandHandler("cancel", AdminHandler.admin_menu_exit),
         ],
         per_message=False
     )
     app.add_handler(admin_conv)
 
     admin_broadcast_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(AdminHandler.admin_broadcast_menu, pattern="^admin_broadcast$")
-        ],
+        entry_points=[CallbackQueryHandler(AdminHandler.admin_broadcast_menu, pattern="^admin_broadcast$")],
         states={
-            "ADMIN_BROADCAST": [
-                MessageHandler(filters.TEXT | filters.PHOTO, AdminHandler.process_broadcast)
-            ]
+            "ADMIN_BROADCAST": [MessageHandler(filters.TEXT | filters.PHOTO, AdminHandler.process_broadcast)]
         },
         fallbacks=[
             CallbackQueryHandler(AdminHandler.admin_menu, pattern="^start_over$"),
-            CommandHandler("cancel", AdminHandler.admin_menu)
+            CommandHandler("cancel", AdminHandler.admin_menu),
+    
+            # ✅ добавьте:
+            CommandHandler("admin", AdminHandler.admin_menu_exit),
+            CommandHandler("start", AdminHandler.admin_menu_exit),
         ],
         per_message=False
     )
     app.add_handler(admin_broadcast_conv)
 
-    # Обработчик списка пользователей
-    app.add_handler(CallbackQueryHandler(
-        AdminHandler.admin_list_users,
-        pattern="^admin_list_users$"
-    ))
+    admin_sendmsg_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(AdminHandler.admin_send_message_menu, pattern="^admin_send_msg$")
+        ],
+        states={
+            "ADMIN_SEND_MSG_USERID": [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, AdminHandler.admin_send_message_get_userid)
+            ],
+            "ADMIN_SEND_MSG_TEXT": [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, AdminHandler.admin_send_message_get_text)
+            ]
+        },
+        fallbacks=[
+            CallbackQueryHandler(AdminHandler.admin_users_menu, pattern="^admin_users$"),
+            CallbackQueryHandler(AdminHandler.admin_users_menu, pattern="^admin_back$"),
+    
+            # ✅ добавьте:
+            CommandHandler("admin", AdminHandler.admin_menu_exit),
+            CommandHandler("start", AdminHandler.admin_menu_exit),
+            CommandHandler("cancel", AdminHandler.admin_menu_exit),
+        ],
+        per_message=False
+    )
+    app.add_handler(admin_sendmsg_conv)
 
-    # ConversationHandler для раскладов Таро
+
+    # Список пользователей
+    app.add_handler(CallbackQueryHandler(AdminHandler.admin_list_users, pattern="^admin_list_users$"))
+
+
+    # --- Индивидуальный расклад ---
     reading_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(ReadingHandler.begin_reading, pattern="^request_reading$")],
         states={
-            QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, ReadingHandler.process_question)],
-            SITUATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, ReadingHandler.process_situation)],
-            NUM_CARDS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ReadingHandler.process_num_cards)],
+            QUESTION:   [MessageHandler(filters.TEXT & ~filters.COMMAND, ReadingHandler.process_question)],
+            SITUATION:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ReadingHandler.process_situation)],
+            NUM_CARDS:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ReadingHandler.process_num_cards)],
             CHOOSE_METHOD: [
                 CallbackQueryHandler(ReadingHandler.choose_method, pattern="^(random_cards|manual_cards|pick_cards|back)$"),
             ],
@@ -162,97 +167,44 @@ def setup_handlers(app: Application) -> None:
     )
     app.add_handler(reading_conv)
 
-    # Обработчики значений карт
-    app.add_handler(CallbackQueryHandler(
-        CardMeaningsHandler.show_categories,
-        pattern="^card_meanings$"
-    ))
-    app.add_handler(CallbackQueryHandler(
-        CardMeaningsHandler.show_cards,
-        pattern="^(major_arcana|wands|cups|swords|pentacles)$"
-    ))
-    app.add_handler(CallbackQueryHandler(
-        CardMeaningsHandler.show_meaning,
-        pattern=r"^meaning_.+_[01]$"
-    ))
+    # Значения карт
+    app.add_handler(CallbackQueryHandler(CardMeaningsHandler.show_categories, pattern="^card_meanings$"))
+    app.add_handler(CallbackQueryHandler(CardMeaningsHandler.show_cards, pattern="^(major_arcana|wands|cups|swords|pentacles)$"))
+    app.add_handler(CallbackQueryHandler(CardMeaningsHandler.show_meaning, pattern=r"^meaning_.+_[01]$"))
 
-    # ConversationHandler для поиска карт
+    # Поиск карты (оставлена ровно одна process_search в handlers.py)
     search_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(
-            CardMeaningsHandler.start_search, 
-            pattern="^search_card$"
-        )],
-        states={
-            "SEARCH_CARD": [MessageHandler(
-                filters.TEXT & ~filters.COMMAND, 
-                CardMeaningsHandler.process_search
-            )]
-        },
+        entry_points=[CallbackQueryHandler(CardMeaningsHandler.start_search, pattern="^search_card$")],
+        states={"SEARCH_CARD": [MessageHandler(filters.TEXT & ~filters.COMMAND, CardMeaningsHandler.process_search)]},
         fallbacks=[
-            CallbackQueryHandler(
-                CardMeaningsHandler.show_categories, 
-                pattern="^card_meanings$"
-            ),
+            CallbackQueryHandler(CardMeaningsHandler.show_categories, pattern="^card_meanings$"),
             CommandHandler("cancel", CardMeaningsHandler.cancel_search)
         ]
     )
     app.add_handler(search_conv)
 
-    # Обработчики подписки
-    app.add_handler(CallbackQueryHandler(
-        SubscriptionHandler.show_subscriptions,
-        pattern="^subscription$"
-    ))
-    app.add_handler(CallbackQueryHandler(
-        SubscriptionHandler.handle_subscription,
-        pattern="^sub_(monthly|5|10|15)$"
-    ))
+    # Подписки
+    app.add_handler(CallbackQueryHandler(SubscriptionHandler.show_subscriptions, pattern="^subscription$"))
+    app.add_handler(CallbackQueryHandler(SubscriptionHandler.handle_subscription, pattern="^sub_(monthly|5|10|15)$"))
 
-    # Обработчик заказа админу (ещё один admin conv, не конфликтует)
+    # Заказ вопроса админу
     admin_order_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(
-                AdminHandler.forward_to_admin,
-                pattern="^order_from_admin$"
-            )
-        ],
-        states={
-            ASK_QUESTION: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    AdminHandler.process_admin_question
-                )
-            ]
-        },
+        entry_points=[CallbackQueryHandler(AdminHandler.forward_to_admin, pattern="^order_from_admin$")],
+        states={ASK_QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, AdminHandler.process_admin_question)]},
         fallbacks=[
-            CallbackQueryHandler(
-                StartHandler.start,
-                pattern="^start_over$"
-            ),
-            CallbackQueryHandler(
-                SubscriptionHandler.show_subscriptions,
-                pattern="^back$"
-            )
+            CallbackQueryHandler(StartHandler.start, pattern="^start_over$"),
+            CallbackQueryHandler(SubscriptionHandler.show_subscriptions, pattern="^back$")
         ],
         per_message=False
     )
     app.add_handler(admin_order_conv)
 
-    # Общие обработчики кнопок
-    app.add_handler(CallbackQueryHandler(
-        StartHandler.start,
-        pattern="^start_over$"
-    ))
-    app.add_handler(CallbackQueryHandler(
-        BaseHandler.back_handler,
-        pattern="^back$"
-    ))
+    # Общие кнопки
+    app.add_handler(CallbackQueryHandler(StartHandler.start, pattern="^start_over$"))
+    app.add_handler(CallbackQueryHandler(BaseHandler.back_handler, pattern="^back$"))
 
-    # Обработчик неизвестных команд (ставьте в самый конец!)
-    app.add_handler(MessageHandler(
-        filters.ALL,
-        StartHandler.start
-    ))
+    # 🛡️ Последний перехватчик — в самом конце, как и был
+    app.add_handler(MessageHandler(filters.ALL, StartHandler.start))
 
 async def run_bot() -> None:
     """Основная функция запуска бота"""

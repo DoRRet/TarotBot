@@ -3,8 +3,12 @@ from pathlib import Path
 from config import Config
 import logging
 from typing import Optional
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
+
+def _utcnow_str() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 async def init_db():
     """Инициализация базы данных"""
@@ -46,6 +50,17 @@ async def init_db():
             FOREIGN KEY(user_id) REFERENCES users(telegram_id)
         );
         ''')
+        try:
+            cur = await conn.execute("PRAGMA table_info(users)")
+            cols = [row[1] for row in await cur.fetchall()]
+            if "referrer_id" not in cols:
+                await conn.execute("ALTER TABLE users ADD COLUMN referrer_id INTEGER")
+                await conn.commit()
+        except Exception as e:
+            logger.warning(f"Schema check/migration failed: {e}")
+        
+        # Индексы для ускорения поиска активных подписок
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_user_end ON subscriptions(user_id, end_date)")
         await conn.commit()
 
 async def execute_query(query: str, params: tuple = (), fetch_one: bool = False):
@@ -99,7 +114,6 @@ async def add_user(telegram_id: int, username: str = None, referrer_id: Optional
             "UPDATE users SET username = ? WHERE telegram_id = ?",
             (username, telegram_id)
         )
-
 
 async def get_user(telegram_id: int):
     """Получение информации о пользователе"""
@@ -162,15 +176,30 @@ async def update_attempts(telegram_id: int, change: int):
 
 
 async def add_subscription(telegram_id: int, sub_type: str, duration_days: int):
-    """Добавление подписки"""
-    from datetime import datetime, timedelta
-    start = datetime.now()
-    end = start + timedelta(days=duration_days)
-    
+    """Добавление подписки (UTC-таймстемпы)"""
+    start_dt = datetime.now(timezone.utc)
+    end_dt = start_dt + timedelta(days=duration_days)
+    start = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    end = end_dt.strftime("%Y-%m-%d %H:%M:%S")
     await execute_query(
         "INSERT INTO subscriptions (user_id, type, start_date, end_date) VALUES (?, ?, ?, ?)",
-        (telegram_id, sub_type, start.isoformat(), end.isoformat())
+        (telegram_id, sub_type, start, end)
     )
+
+async def cancel_subscription(user_id: int) -> int:
+    """Аннулировать активные подписки пользователя, вернуть число отменённых"""
+    async with aiosqlite.connect(Config.DB_PATH) as conn:
+        cursor = await conn.execute(
+            """
+            UPDATE subscriptions
+               SET end_date = datetime('now')
+             WHERE user_id = ?
+               AND end_date > datetime('now')
+            """,
+            (user_id,)
+        )
+        await conn.commit()
+        return cursor.rowcount
 
 async def save_reading(telegram_id: int, question: str, situation: str, cards: list, interpretation: str):
     """Сохранение расклада"""
@@ -178,3 +207,4 @@ async def save_reading(telegram_id: int, question: str, situation: str, cards: l
         "INSERT INTO readings (user_id, question, situation, cards, interpretation) VALUES (?, ?, ?, ?, ?)",
         (telegram_id, question, situation, ",".join(cards), interpretation)
     )
+

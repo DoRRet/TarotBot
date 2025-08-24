@@ -5,8 +5,9 @@ import logging
 from database import (
     add_user, get_user, get_attempts, update_attempts,
     get_active_subscription, save_reading, add_subscription,
-    execute_query
+    execute_query, cancel_subscription
 )
+
 from tarot_interpreter import TarotInterpreter
 from datetime import datetime
 import html
@@ -20,6 +21,44 @@ CARDS_IMAGE = "cards_back.png"
 PICK_CARDS = 9000
 
 logger = logging.getLogger(__name__)
+
+PARSE = "HTML"
+
+def h(text: str) -> str:
+    return f"✨ <b>{html.escape(text)}</b>"
+
+def sep() -> str:
+    return "—" * 20
+
+def bullet(items) -> str:
+    return "\n".join(f"• {i}" for i in items)
+
+def kv(label: str, value: str) -> str:
+    return f"<b>{html.escape(label)}:</b> {html.escape(value)}"
+
+def main_menu_buttons():
+    return [
+        ("🃏 Дневной расклад", "daily_reading"),
+        ("🃏 Недельный расклад", "weekly_reading"),
+        ("🃏 Запросить расклад", "request_reading"),
+        ("💎 Подписка", "subscription"),
+        ("📜 Значения карт", "card_meanings"),
+        ("📞 Консультация", "consultation"),
+        ("👫 Пригласить друга", "referral"),
+        ("ℹ️ Помощь", "help"),
+    ]
+
+def primary_menu_keyboard(columns: int = 2) -> InlineKeyboardMarkup:
+    return BaseHandler.create_keyboard(main_menu_buttons(), columns=columns)
+
+def ok_keyboard():
+    return BaseHandler.create_keyboard([("🏠 На главную", "start_over")])
+
+def back_keyboard(cb="start_over"):
+    return BaseHandler.create_keyboard([("🔙 Назад", cb)])
+
+def action_keyboard(pairs: list, columns: int = 2):
+    return BaseHandler.create_keyboard(pairs, columns=columns)
 
 (
     CHOOSE_METHOD, QUESTION, SITUATION,
@@ -115,23 +154,39 @@ class BaseHandler:
 
 class CardMeaningsHandler(BaseHandler):
     """Обработчик значений карт Таро"""
-    
+
+    @staticmethod
+    async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        await query.edit_message_text(
+            text="🔍 *Введите название карты для поиска:*",
+            reply_markup=BaseHandler.create_keyboard([("🔙 Отмена", "card_meanings")]),
+            parse_mode="Markdown"
+        )
+        return "SEARCH_CARD"
+
     @staticmethod
     async def process_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка поискового запроса (с нечетким сопоставлением)"""
+        """Единая корректная версия поиска (без дубликатов)"""
         search_query = update.message.text
         results = []
+
+        # 1) точное/нечёткое совпадение по всей колоде
         for card in TAROT_DECK:
             matched, found = match_card_name(search_query, [card])
             if found:
                 card_data = TarotInterpreter._card_meanings.get(card, {})
                 results.append((card, card_data.get("category", "Неизвестно")))
+
+        # 2) если не нашли — подстрочный поиск по нормализованному имени
         if not results:
             query_norm = normalize_card_name(search_query)
             for card in TAROT_DECK:
                 if query_norm in normalize_card_name(card):
                     card_data = TarotInterpreter._card_meanings.get(card, {})
                     results.append((card, card_data.get("category", "Неизвестно")))
+
         if not results:
             await update.message.reply_text(
                 "🔍 Карты не найдены. Попробуйте другой запрос.",
@@ -154,10 +209,8 @@ class CardMeaningsHandler(BaseHandler):
             return ConversationHandler.END
 
         buttons = [
-            [InlineKeyboardButton(
-                f"{card} ({category})",
-                callback_data=f"meaning_{card}_0"
-            )] for card, category in results
+            [InlineKeyboardButton(f"{card} ({category})", callback_data=f"meaning_{card}_0")]
+            for card, category in results
         ]
         buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="card_meanings")])
 
@@ -166,6 +219,7 @@ class CardMeaningsHandler(BaseHandler):
             reply_markup=InlineKeyboardMarkup(buttons)
         )
         return ConversationHandler.END
+
 
     @staticmethod
     async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -394,59 +448,6 @@ class CardMeaningsHandler(BaseHandler):
                 reply_markup=BaseHandler.create_keyboard([("🔙 Назад", "card_meanings")])
             )
 
-    @staticmethod
-    async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Начало поиска карты"""
-        query = update.callback_query
-        await query.answer()
-        
-        await query.edit_message_text(
-            text="🔍 *Введите название карты для поиска:*",
-            reply_markup=BaseHandler.create_keyboard([("🔙 Отмена", "card_meanings")]),
-            parse_mode="Markdown"
-        )
-        return "SEARCH_CARD"
-
-    @staticmethod
-    async def process_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка поискового запроса"""
-        search_query = update.message.text
-        results = await TarotInterpreter.search_cards(search_query)
-        
-        if not results:
-            await update.message.reply_text(
-                "🔍 Карты не найдены. Попробуйте другой запрос.",
-                reply_markup=BaseHandler.create_keyboard([("🔙 Назад", "card_meanings")])
-            )
-            return "SEARCH_CARD"
-        
-        if len(results) == 1:
-            card_name, _ = results[0]
-            meaning = await TarotInterpreter.get_card_meaning(card_name)
-            buttons = [
-                ("🔙 Назад к категориям", "card_meanings"),
-                ("🏠 На главную", "start_over")
-            ]
-            await update.message.reply_text(
-                meaning,
-                reply_markup=BaseHandler.create_keyboard(buttons),
-                parse_mode="Markdown"
-            )
-            return ConversationHandler.END
-        
-        buttons = [
-            [InlineKeyboardButton(
-                f"{card} ({category})", 
-                callback_data=f"meaning_{card}_0"
-            )] for card, category in results
-        ]
-        buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="card_meanings")])
-        
-        await update.message.reply_text(
-            f"🔍 Результаты поиска по запросу '{search_query}':",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
-        return ConversationHandler.END
 
     @staticmethod
     async def cancel_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -460,21 +461,22 @@ class CardMeaningsHandler(BaseHandler):
 class StartHandler(BaseHandler):
     @staticmethod
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
-        referrer_id = None
-        # Проверяем аргумент (start с id)
-        if update.message and update.message.text:
-            args = update.message.text.split()
-            if len(args) > 1 and args[1].isdigit():
-                if int(args[1]) != user.id:   # запрет самореферала
-                    referrer_id = int(args[1])
-        # Передаем context для отправки бонуса-приглашателю
-        await add_user(user.id, user.username, referrer_id, context=context)
-        """Обработка команды /start"""
+        """Обработка команды /start (работает и из сообщения, и из callback)"""
         try:
             user = update.effective_user
-            await add_user(user.id, user.username)
-
+            referrer_id = None
+    
+            # Если стартовали командой /start с параметром — учитываем реферала
+            if getattr(update, "message", None) and update.message and update.message.text:
+                args = update.message.text.split()
+                if len(args) > 1 and args[1].isdigit():
+                    rid = int(args[1])
+                    if rid != user.id:  # запрет самореферала
+                        referrer_id = rid
+    
+            # Регистрируем/обновляем пользователя ОДИН РАЗ
+            await add_user(user.id, user.username, referrer_id, context=context)
+    
             buttons = [
                 ("🃏 Дневной расклад", "daily_reading"),
                 ("🃏 Недельный расклад", "weekly_reading"),
@@ -483,26 +485,35 @@ class StartHandler(BaseHandler):
                 ("📜 Значения карт", "card_meanings"),
                 ("📞 Консультация", "consultation"),
                 ("👫 Пригласить друга", "referral"),
-                ("ℹ️ Помощь", "help") 
+                ("ℹ️ Помощь", "help")
             ]
-            
+    
+            # Отправляем привет в ЛЮБОМ случае (если пришли из callback — тоже шлём новое сообщение)
             await context.bot.send_photo(
                 chat_id=user.id,
                 photo=Config.WELCOME_IMAGE_URL,
-                caption="🌟 *Без лишней магии — только ясность!*\n\n"
-"Здесь можно быстро навести порядок в мыслях и получить честный совет — карты не льстят и не пугают, а помогают увидеть суть.\n\n"
-"Выбери, что тебе нужно прямо сейчас:\n",
-                parse_mode="Markdown",
-                reply_markup=BaseHandler.create_keyboard(buttons)
+                caption=(
+                    f"🌟 {h('Без лишней магии — только ясность!')} \n\n"
+                    "Здесь можно быстро навести порядок в мыслях и получить честный совет — карты не льстят и не пугают, а помогают увидеть суть.\n\n"
+                    f"{sep()}\n"
+                    f"{bullet(['Быстрые расклады', 'Пакеты попыток и подписка', 'Полная база значений карт', 'Личная консультация'])}\n\n"
+                    "Выберите действие ниже:"
+                ),
+                parse_mode=PARSE,
+                reply_markup=BaseHandler.create_keyboard(buttons, columns=2)
             )
         except Exception as e:
-            logger.error(f"Start error: {str(e)}")
-            await update.message.reply_text("⚠️ Произошла ошибка. Попробуйте позже.")
+            logger.error(f"Start error: {str(e)}", exc_info=True)
+            # Гарантированно шлём fallback в приват
+            try:
+                await context.bot.send_message(
+                    chat_id=update.effective_user.id,
+                    text="⚠️ Произошла ошибка при запуске. Попробуйте ещё раз командой /start."
+                )
+            except Exception:
+                pass
 
-    @staticmethod
-    async def help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка команды помощи"""
-        await HelpHandler.show_help(update, context)
+
 
 class HelpHandler(BaseHandler):
     """Обработчик помощи и информации о боте"""
@@ -514,40 +525,39 @@ class HelpHandler(BaseHandler):
         chat_id = update.effective_chat.id
      
         help_text = (
-            "📚 <b>Навести порядок в мыслях — просто!</b>\n\n"
-            "🔮 <b>Что умеет бот:</b>\n"
-            "1. 🃏 <b>Расклад</b> — получи честный разбор твоей ситуации по картам\n"
-            "2. 💎 <b>Подписка</b> — неограниченный доступ к раскладам, когда захочешь\n"
-            "3. 📜 <b>Значения карт</b> — полная база по каждой карте, без лишних слов\n"
-            "4. 📞 <b>Консультация</b> — персональный разбор от опытного таролога\n"
-            "5. 👥 <b>Пригласить друга</b> — получай бонусы за рекомендации\n\n"
-            "❓ <b>Как использовать:</b>\n"
-            "- Выбери нужную функцию в меню\n"
-            "- Следуй подсказкам — всё чётко и просто\n"
-            "- Для отмены любого действия — /cancel\n\n"
-            f"📩 <b>Связаться с поддержкой:</b> @{Config.ADMIN_USERNAME}\n"
-            "🕒 <b>Доступен всегда — хоть ночью, хоть днём</b>"
-        )
+        f"{h('Что умеет бот')} \n\n"
+        f"{bullet(['🃏 Расклад — получи честный разбор твоей ситуации',
+                   '💎 Подписка — неограниченный доступ к раскладам, когда захочешь',
+                   '📜 Значения карт — полная база по каждой карте, без лишних слов',
+                   '📞 Консультация — персональный разбор от опытного таролога'])}\n\n"
+        f"{sep()}\n"
+        f"{h('Советы по формулировке вопросов')}\n"
+        f"{bullet(['Спрашивайте конкретно: «Что мне сделать, чтобы ...?»',
+                   'Добавьте детали ситуации — это повышает точность'])}\n\n"
+        f"{kv('Связаться с поддержкой', f'@{Config.ADMIN_USERNAME}')}\n"
+        "Доступен всегда — отвечу по мере возможности."
+    )
+
      
         buttons = [
-            ("🃏 Попробовать расклад", "request_reading"),
+            ("🃏 Расклад", "request_reading"),
             ("💎 Подписка", "subscription"),
             ("📞 Консультация", "consultation"),
             ("🏠 На главную", "start_over")
         ]
         keyboard = BaseHandler.create_keyboard(buttons, columns=2)
-     
+    
         try:
             if query:
                 await query.answer()
-     
+    
                 try:
                     # Пытаемся отредактировать, если есть текст
                     if query.message.text:
                         await query.edit_message_text(
                             text=help_text,
                             reply_markup=keyboard,
-                            parse_mode="HTML"
+                            parse_mode=PARSE
                         )
                     else:
                         raise BadRequest("no text to edit")
@@ -558,7 +568,7 @@ class HelpHandler(BaseHandler):
                         chat_id=chat_id,
                         text=help_text,
                         reply_markup=keyboard,
-                        parse_mode="HTML"
+                        parse_mode=PARSE
                     )
             else:
                 # Если это обычное сообщение (не callback)
@@ -566,9 +576,9 @@ class HelpHandler(BaseHandler):
                     chat_id=chat_id,
                     text=help_text,
                     reply_markup=keyboard,
-                    parse_mode="HTML"
+                    parse_mode=PARSE
                 )
-     
+    
         except Exception as e:
             logger.error(f"Error in show_help: {e}")
             await context.bot.send_message(
@@ -592,20 +602,20 @@ class ConsultationHandler(BaseHandler):
         ]
        
         text = (
-        "🃏 <b>Разберём твою ситуацию по картам?</b> 🤔\n\n"
-        "Это не эзотерика, а <u>инструмент для ясности</u>. Как совет умного друга, только карты не врут и не льстят.\n\n"
-        "🔥 <b>Что будет:</b>\n"
-        "• Разберём 3-4 вопроса, которые тебя гложут\n"
-        "• На каждый — в среднем 25 минут чёткого анализа (без воды)\n"
-        "• Никакой «судьбы» — только факты и варианты решений\n\n"
-        "💡 <b>Что получишь:</b>\n"
-        "→ Объективный взгляд на ситуацию\n"
-        "→ Конкретные шаги, а не туманные прогнозы\n"
-        "→ Никакой мистики — только логика и психология\n\n"
-        "⏱ <b>Время:</b> 60-80 минут — как хороший подкаст, но с фокусом на тебя\n"
-        "💸 <b>Цена:</b> 600₽ — дешевле, чем психолог, и быстрее, чем самокопание\n\n"
-        "📲 <b>Если хочешь разложить всё по полочкам — жми «Заказать»!</b>\n"
-    )
+            "🃏 <b>Разберём твою ситуацию по картам?</b> 🤔\n\n"
+            "Это не эзотерика, а <u>инструмент для ясности</u>. Как совет умного друга, только карты не врут и не льстят.\n\n"
+            "🔥 <b>Что будет:</b>\n"
+            "• Разберём 3-4 вопроса, которые тебя гложут\n"
+            "• На каждый — в среднем 25 минут чёткого анализа (без воды)\n"
+            "• Никакой «судьбы» — только факты и варианты решений\n\n"
+            "💡 <b>Что получишь:</b>\n"
+            "→ Объективный взгляд на ситуацию\n"
+            "→ Конкретные шаги, а не туманные прогнозы\n"
+            "→ Никакой мистики — только логика и психология\n\n"
+            "⏱ <b>Время:</b> 60-80 минут — как хороший подкаст, но с фокусом на тебя\n"
+            "💸 <b>Цена:</b> 600₽ — дешевле, чем психолог, и быстрее, чем самокопание\n\n"
+            "📲 <b>Если хочешь разложить всё по полочкам — жми «Заказать»!</b>\n"
+        )
        
         try:
             if query.message and query.message.text:
@@ -631,6 +641,7 @@ class ConsultationHandler(BaseHandler):
                 reply_markup=BaseHandler.create_keyboard(buttons),
                 parse_mode="HTML"
             )
+    
 
 
     @staticmethod
@@ -758,14 +769,17 @@ class SubscriptionHandler(BaseHandler):
                 raise
     
             # Формируем текст сообщения
-            status = "активна ✅" if has_sub else "неактивна ❌"
+            has_sub = bool(await get_active_subscription(user_id))
+            attempts_display = "∞" if has_sub else (attempts if attempts is not None else 0)
+            
             text = (
-                f"💎 <b>Статус подписки:</b>: {status}\n"
-                f"🃏 <b>Осталось попыток:</b>: {attempts if attempts is not None else 0}\n\n"
-                "<b>Доступные варианты:</b>\n"
-                "1.💎 <b>Месяц полной ясности</b> — все расклады без ограничений за 349₽\n"
-                "2.🛒 <b>Разовые пакеты</b> — бери столько попыток, сколько нужно\n\n"
-
+                f"{h('Подписка и попытки')}\n\n"
+                f"{kv('Статус подписки', 'активна ✅' if has_sub else 'неактивна ❌')}\n"
+                f"{kv('Осталось попыток', str(attempts_display))}\n\n"
+                f"{sep()}\n"
+                f"{h('Варианты')}\n"
+                f"{bullet(['💎 Месяц полной ясности — 349₽',
+                           '🛒 Разовые пакеты попыток: 5 / 10 / 15'])}\n\n"
                 "Решай сам — глубоко и по делу или по чуть-чуть, но всегда по фактам."
             )
     
@@ -782,8 +796,8 @@ class SubscriptionHandler(BaseHandler):
             try:
                 await query.edit_message_text(
                     text=text,
-                    reply_markup=BaseHandler.create_keyboard(buttons),
-                    parse_mode="HTML"
+                    reply_markup=BaseHandler.create_keyboard(buttons, columns=2),
+                    parse_mode=PARSE
                 )
                 logger.info(f"Successfully updated menu for user {user_id}")
             except BadRequest as e:
@@ -791,8 +805,8 @@ class SubscriptionHandler(BaseHandler):
                 await context.bot.send_message(
                     chat_id=user_id,
                     text=text,
-                    reply_markup=BaseHandler.create_keyboard(buttons),
-                    parse_mode="HTML"
+                    reply_markup=BaseHandler.create_keyboard(buttons, columns=2),
+                    parse_mode=PARSE
                 )
     
         except Exception as e:
@@ -1258,22 +1272,31 @@ class ReadingHandler(BaseHandler):
             else:
                 invalid.append(card)
     
+        # Функция для склонения слова "карта"
+        def card_word(n):
+            if n % 10 == 1 and n % 100 != 11:
+                return "карту"
+            elif 2 <= n % 10 <= 4 and (n % 100 < 10 or n % 100 >= 20):
+                return "карты"
+            else:
+                return "карт"
+    
         # Проверка на количество карт
         n_valid = len(valid_cards)
         if n_valid != num_needed or invalid:
             lines = []
             if n_valid < num_needed:
-                lines.append(f"❗️ Вы ввели {n_valid} карты, а нужно {num_needed}.")
+                lines.append(f"❗️ Вы ввели {n_valid} {card_word(n_valid)}, а нужно {num_needed} {card_word(num_needed)}.")
                 if n_valid > 0:
                     lines.append(f"✅ Принятые карты: {', '.join(valid_cards)}")
             elif n_valid > num_needed:
-                lines.append(f"❗️ Вы ввели {n_valid} карт, а нужно {num_needed}.")
+                lines.append(f"❗️ Вы ввели {n_valid} {card_word(n_valid)}, а нужно {num_needed} {card_word(num_needed)}.")
                 lines.append(f"✅ Принятые карты: {', '.join(valid_cards[:num_needed])}")
     
             if invalid:
                 lines.append(f"❌ Неизвестные карты: {', '.join(invalid)}")
     
-            lines.append(f"Пожалуйста, введите ровно {num_needed} карты через запятую.")
+            lines.append(f"Пожалуйста, введите ровно {num_needed} {card_word(num_needed)} через запятую.")
             await update.message.reply_text("\n".join(lines))
             return ENTER_CARDS
     
@@ -1319,43 +1342,55 @@ class ReferralHandler(BaseHandler):
 
 class AdminHandler(BaseHandler):
     """Обработчики для администратора"""
-    
+
+
     @staticmethod
     async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Меню администрирования"""
-        user_id = str(update.effective_user.id)
-        admin_id = str(Config.ADMIN_CHAT_ID)
-    
+        """Меню администрирования (корректная проверка admin id)"""
+        try:
+            uid = int(update.effective_user.id)
+            admin_id = int(Config.ADMIN_CHAT_ID)
+        except Exception:
+            logger.error("ADMIN_CHAT_ID в Config задан неверно (ожидается int)")
+            # Пытаемся хотя бы не уронить UX
+            admin_id = -1
+            uid = int(update.effective_user.id)
+
         buttons = [
             ("👤 Управление пользователями", "admin_users"),
             ("📊 Аналитика", "admin_analytics"),
             ("📢 Рассылка", "admin_broadcast"),
             ("🔙 На главную", "start_over")
         ]
-    
-        # Проверяем, как пришёл запрос
-        if hasattr(update, "message") and update.message:
-            if user_id != admin_id:
-                await update.message.reply_text("❌ Доступ запрещен")
-                return
-            await update.message.reply_text(
-                "⚙️ *Админ-панель*",
-                reply_markup=BaseHandler.create_keyboard(buttons),
-                parse_mode="Markdown"
-            )
-        elif hasattr(update, "callback_query") and update.callback_query:
-            if user_id != admin_id:
-                await update.callback_query.answer("❌ Доступ запрещен", show_alert=True)
-                return
-            await update.callback_query.edit_message_text(
-                "⚙️ *Админ-панель*",
-                reply_markup=BaseHandler.create_keyboard(buttons),
-                parse_mode="Markdown"
-            )
-        else:
-            # На всякий случай: неизвестный тип апдейта
-            logger.warning("admin_menu: Unknown update type")
+        kb = BaseHandler.create_keyboard(buttons)
 
+        # Если не админ — отвечаем корректно и выходим
+        if uid != admin_id:
+            if getattr(update, "message", None):
+                await update.message.reply_text("❌ Доступ запрещён")
+            elif getattr(update, "callback_query", None):
+                await update.callback_query.answer("❌ Доступ запрещён", show_alert=True)
+            return
+
+        # Рендерим меню
+        if getattr(update, "message", None):
+            await update.message.reply_text("⚙️ *Админ-панель*", reply_markup=kb, parse_mode="Markdown")
+        elif getattr(update, "callback_query", None):
+            q = update.callback_query
+            await q.answer()
+            # если исходное сообщение нельзя отредактировать — шлём новое
+            try:
+                await q.edit_message_text("⚙️ *Админ-панель*", reply_markup=kb, parse_mode="Markdown")
+            except BadRequest:
+                await context.bot.send_message(chat_id=uid, text="⚙️ *Админ-панель*", reply_markup=kb, parse_mode="Markdown")
+        else:
+            logger.warning("admin_menu: неизвестный тип апдейта")
+
+    @staticmethod
+    async def admin_menu_exit(update, context):
+        """Показывает админ-меню и ЗАВЕРШАЕТ текущий Conversation."""
+        await AdminHandler.admin_menu(update, context)
+        return ConversationHandler.END
 
     @staticmethod
     async def admin_broadcast_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1420,7 +1455,9 @@ class AdminHandler(BaseHandler):
             ("➕ Добавить попытки", "admin_add_attempts"),
             ("➖ Удалить попытки", "admin_remove_attempts"),
             ("💎 Добавить подписку", "admin_add_sub"),
+            ("🚫 Аннулировать подписку", "admin_cancel_sub"),
             ("📋 Список пользователей", "admin_list_users"),
+            ("✉️ Написать пользователю", "admin_send_msg"),
             ("🔙 Назад", "start_over")
         ]
         
@@ -1470,6 +1507,18 @@ class AdminHandler(BaseHandler):
                     reply_markup=BaseHandler.create_keyboard(buttons)
                 )
                 return "ADMIN_GET_SUB_TYPE"
+            elif action == "cancel_sub":
+                changed = await cancel_subscription(user_id)
+                text = (
+                    f"🚫 Подписка пользователя {user_id} аннулирована."
+                    if changed and changed > 0 else
+                    f"ℹ️ У пользователя {user_id} нет активной подписки."
+                )
+                await update.message.reply_text(
+                    text,
+                    reply_markup=BaseHandler.create_keyboard([("🔙 В меню", "admin_users")])
+                )
+                return ConversationHandler.END
 
         except ValueError:
             await update.message.reply_text("❌ Неверный ID пользователя. Введите число:")
@@ -1664,5 +1713,49 @@ class AdminHandler(BaseHandler):
                     err_text,
                     reply_markup=BaseHandler.create_keyboard([("🔙 Назад", "start_over")])
                 )
+
+    @staticmethod
+    async def admin_send_message_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Пункт меню: отправить сообщение пользователю"""
+        query = update.callback_query
+        await query.answer()
+        await query.edit_message_text(
+            "✉️ Введите ID пользователя, которому хотите отправить сообщение:",
+            reply_markup=BaseHandler.create_keyboard([("🔙 Назад", "admin_users")])
+        )
+        return "ADMIN_SEND_MSG_USERID"
+
+    @staticmethod
+    async def admin_send_message_get_userid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Получить ID пользователя для отправки сообщения"""
+        try:
+            user_id = int(update.message.text)
+            context.user_data["send_msg_user_id"] = user_id
+            await update.message.reply_text(
+                "✍️ Введите текст сообщения:",
+                reply_markup=BaseHandler.create_keyboard([("🔙 Назад", "admin_users")])
+            )
+            return "ADMIN_SEND_MSG_TEXT"
+        except ValueError:
+            await update.message.reply_text("❌ Введите корректный числовой ID пользователя:")
+            return "ADMIN_SEND_MSG_USERID"
+
+    @staticmethod
+    async def admin_send_message_get_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Получить текст сообщения и отправить пользователю"""
+        user_id = context.user_data.get("send_msg_user_id")
+        text = update.message.text
+        try:
+            await context.bot.send_message(chat_id=user_id, text=text)
+            await update.message.reply_text(
+                f"✅ Сообщение отправлено пользователю {user_id}.",
+                reply_markup=BaseHandler.create_keyboard([("🔙 В меню", "admin_users")])
+            )
+        except Exception as e:
+            await update.message.reply_text(
+                f"❌ Не удалось отправить сообщение: {e}",
+                reply_markup=BaseHandler.create_keyboard([("🔙 В меню", "admin_users")])
+            )
+        return ConversationHandler.END
     
     
